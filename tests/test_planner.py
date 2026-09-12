@@ -1434,8 +1434,8 @@ class TestOneGoalBecomesSeveralSteps:
             "GET http://h/users?first_name=Gizem",
             '{"count":3,"data":['
             '{"id":43,"first_name":"Gizem","email":"g.a43@example.com"},'
-            '{"id":70,"first_name":"Gizem","email":"g.s70@corp.net"},'
-            '{"id":96,"first_name":"Gizem","email":"g.k96@demo.org"}]}',
+            '{"id":70,"first_name":"Gizem","email":"g.s70@example.com"},'
+            '{"id":96,"first_name":"Gizem","email":"g.k96@example.com"}]}',
         )
         return definition, listed, _Taken
 
