@@ -1,0 +1,19 @@
+# Credentials. The tokens this service holds reach the broker and the cipher.
+.env
+.env.*
+!.env.example
+
+# The virtual environment: 186 MB of other people's code, rebuilt from
+# requirements in one command.
+.venv/
+venv/
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.idea/
+*.iml
+.DS_Store
