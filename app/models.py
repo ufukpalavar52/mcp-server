@@ -369,6 +369,12 @@ class Definition(BaseModel):
 
             if fmt := _JSON_FORMATS.get(item.type):
                 prop["format"] = fmt
+            # Published so a client can refuse before sending rather than after. The
+            # guardrail enforces it either way — a schema is a description, not a gate —
+            # but a caller that knows the ceiling can say so while the text is still in
+            # front of whoever wrote it.
+            if item.type == "block":
+                prop["maxLength"] = BODY_LIMIT
             if item.type == "select" and item.options:
                 prop["enum"] = list(item.options)
             if item.label:
@@ -388,8 +394,33 @@ class Definition(BaseModel):
         }
 
 
+#: The most text one block input may carry, in characters.
+#:
+#: Every other input is bounded by being a word; a block is bounded by nothing, and it is
+#: copied into a command line, a queue message and a shell's stdin on the way to a server.
+#: Nothing along that path declared a ceiling, so the first one to find the limit would
+#: have been whichever component broke first — and that component's error would describe
+#: its own symptom rather than the cause.
+#:
+#: Refused here because this is the one place every caller passes through: the panel, the
+#: console, and an MCP client nobody in this project wrote. A cap enforced in a form is a
+#: cap on the people who use the form.
+BODY_LIMIT = 256 * 1024
+
+
 _JSON_TYPES: dict[str, str] = {"number": "number", "boolean": "boolean"}
-_JSON_FORMATS: dict[str, str] = {"date": "date", "password": "password"}
+
+#: A rendering hint and nothing more. ``textarea`` and ``block`` both want a box rather
+#: than a line wherever this schema is drawn, and the schema is all a client has to go on.
+#: What separates the two — the shell-metacharacter scan ``block`` is exempt from — is read
+#: from the input's own type, never from here: this travels through a catalogue, and a
+#: format any caller can write is no place to keep a safety decision.
+_JSON_FORMATS: dict[str, str] = {
+    "date": "date",
+    "password": "password",
+    "textarea": "textarea",
+    "block": "textarea",
+}
 
 
 def _coerce(input_type: str, raw: str) -> Any:

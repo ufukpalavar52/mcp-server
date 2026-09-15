@@ -3,6 +3,7 @@
 from app.guardrails import (
     check_command,
     check_query,
+    BODY_LIMIT,
     check_static_command,
     unrequested_filters,
 )
@@ -423,3 +424,78 @@ class TestATextBlockGoesIntoAQuotedHeredoc:
             ActionConfig(allowedCommands=["systemctl"]),
             {"service": "apache2"},
         ).allowed
+
+
+class TestABlockHasACeiling:
+    """
+    A block is the one input bounded by nothing.
+
+    Every other value is bounded by being a word. A block is copied into a command line, a
+    queue message and a shell's stdin on the way to a server, and until this check existed
+    nothing along that path declared a limit — so whichever component broke first would
+    have been the one to report it, in words describing its own symptom rather than the
+    cause.
+
+    Refused here because this is where every caller passes: the panel, the console, and an
+    MCP client nobody in this project wrote. The panel's own 256 KB is a courtesy to the
+    person typing; it is not a limit on anyone who skips the panel.
+    """
+
+    FILE = "cat > /tmp/x.py <<'MCPEOF'\n{}\nMCPEOF"
+
+    @staticmethod
+    def _config() -> ActionConfig:
+        return ActionConfig(allowedCommands=["cat"])
+
+    def test_a_body_at_the_ceiling_is_allowed(self):
+        body = "x" * BODY_LIMIT
+
+        verdict = check_static_command(
+            self.FILE.format(body), self._config(), {"content": body},
+            blocks={"content"},
+        )
+
+        assert verdict.allowed
+
+    def test_a_body_past_the_ceiling_is_refused(self):
+        body = "x" * (BODY_LIMIT + 1)
+
+        verdict = check_static_command(
+            self.FILE.format(body), self._config(), {"content": body},
+            blocks={"content"},
+        )
+
+        assert not verdict.allowed
+        assert "past the" in verdict.reasons[0]
+
+    def test_the_reason_names_the_input_and_not_its_contents(self):
+        """
+        What the operator needs is which input was too big and by how much.
+
+        Printing the value back would put a quarter of a megabyte of somebody's script into
+        a log line, an error banner and a conversation turn — three places it does not
+        belong and one that is stored.
+        """
+        body = "sensitive" * BODY_LIMIT
+
+        verdict = check_static_command(
+            self.FILE.format(body), self._config(), {"content": body},
+            blocks={"content"},
+        )
+
+        assert "'content'" in verdict.reasons[0]
+        assert "sensitive" not in verdict.reasons[0]
+
+    def test_an_ordinary_input_has_no_ceiling_of_its_own(self):
+        """
+        The metacharacter scan already bounds what a word can be.
+
+        A long word is not the problem a block's ceiling solves, and refusing one here
+        would be a new rule on every definition that already exists.
+        """
+        verdict = check_static_command(
+            "echo {}".format("x" * (BODY_LIMIT + 1)), ActionConfig(allowedCommands=["echo"]),
+            {"word": "x" * (BODY_LIMIT + 1)},
+        )
+
+        assert verdict.allowed

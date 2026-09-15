@@ -24,7 +24,7 @@ import re
 from collections.abc import Container, Sequence
 from dataclasses import dataclass, field
 
-from app.models import ActionConfig
+from app.models import BODY_LIMIT, ActionConfig
 
 
 @dataclass(frozen=True)
@@ -416,6 +416,22 @@ _HEREDOC = re.compile(
 )
 
 
+
+def _oversized_bodies(bodies: dict[str, str]) -> list[str]:
+    """
+    Which block inputs are past the ceiling.
+
+    By key and size, never by value: what the operator needs is which input was too big
+    and by how much, not to have a quarter of a megabyte printed back at them.
+    """
+    return [
+        f"Input '{key}' is {len(value)} characters, past the {BODY_LIMIT} allowed for a "
+        "text block"
+        for key, value in sorted(bodies.items())
+        if len(value) > BODY_LIMIT
+    ]
+
+
 def check_static_command(
     command: str, config: ActionConfig, substituted: dict[str, str],
     blocks: Container[str] = (),
@@ -463,6 +479,7 @@ def check_static_command(
     bodies = {key: value for key, value in substituted.items() if key in blocks}
 
     reasons.extend(_injected_syntax(words, SHELL_METACHARACTERS, "command"))
+    reasons.extend(_oversized_bodies(bodies))
     reasons.extend(_heredoc_problems(candidate, bodies))
 
     return GuardrailVerdict.ok() if not reasons else GuardrailVerdict(False, reasons)
