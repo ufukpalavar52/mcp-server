@@ -148,6 +148,19 @@ class PromptRequest(BaseModel):
     #: guardrails pass. This only refuses to run anything else.
     expect: str = ""
 
+    #: Every command approved at once, when a person was shown more than one.
+    #:
+    #: A plan whose commands all resolve from the one sentence — "write this script and run
+    #: it" — can be put in front of somebody whole, and approving it twice is two model
+    #: calls and two waits for a decision already made. A plan holding an action that is
+    #: *waiting* on an earlier answer cannot: that command does not exist yet, and there is
+    #: nothing to show. Which plans qualify is decided by the caller; what this guarantees
+    #: is that whatever ran is what was on the screen.
+    #:
+    #: ``expect`` remains the singular form and still works on its own. Both empty means
+    #: nobody approved anything in particular.
+    expect_all: list[str] = Field(default_factory=list, alias="expectAll")
+
     #: True when nobody typed this — a goal loop wrote it from an earlier answer.
     #:
     #: Anything it plans that changes something is held for approval, whatever the action's
@@ -163,6 +176,15 @@ class PromptRequest(BaseModel):
     #: something already written down, and gives it a chance to choose differently: handed
     #: "delete the user with id 59", it once picked the search instead.
     action_id: int | None = Field(default=None, alias="actionId")
+
+    #: Every action a person was shown and approved at once.
+    #:
+    #: The plural of the above and used the same way: named rather than chosen again, so
+    #: the re-plan an approval performs cannot come back with a different selection than
+    #: the one on the screen. Only a plan with nothing waiting on an earlier answer can be
+    #: approved this way — a command that does not exist yet cannot be shown, and
+    #: approving what you have not seen is what this whole path exists to prevent.
+    action_ids: list[int] = Field(default_factory=list, alias="actionIds")
 
     #: Values the caller has already decided, which win over anything routing extracts.
     #:
@@ -501,6 +523,7 @@ async def create_prompt(body: PromptRequest, request: Request) -> PromptResponse
 
     plan = await request.app.state.planner.plan(
         definition, arguments, body.prompt, body.history, body.summary, body.action_id,
+        body.action_ids,
     )
 
     dispatch = None
@@ -533,7 +556,7 @@ async def _dispatch(request: Request, definition: Any, plan: Any, routed: Any,
     thing they agreed to* — planning is not deterministic, so the command approved and the
     command about to run have to be compared rather than assumed equal.
     """
-    approved = bool(body.expect.strip())
+    approved = bool(body.expect.strip()) or bool(_approved_commands(body))
 
     # Only a plan that came out well has anything to approve. A rejected one has no command
     # in it — the guardrails refused the one there was — and offering it for approval would
@@ -552,7 +575,7 @@ async def _dispatch(request: Request, definition: Any, plan: Any, routed: Any,
             ),
         )
 
-    if not _matches(plan, body.expect):
+    if not _matches(plan, _approved_commands(body)):
         return DispatchResult(
             status="refused",
             reason=(
@@ -603,26 +626,42 @@ def _changes_something(plan: Any) -> bool:
     return any(action.writes for action in plan.actions if not action.skipped)
 
 
-def _matches(plan: Any, expected: str) -> bool:
+def _approved_commands(body: PromptRequest) -> list[str]:
+    """Every command this request says a person agreed to, singular or plural."""
+    if body.expect_all:
+        return [line.strip() for line in body.expect_all if line.strip()]
+
+    wanted = body.expect.strip()
+    return [wanted] if wanted else []
+
+
+def _matches(plan: Any, expected: list[str]) -> bool:
     """
     Whether the plan still says what somebody approved.
 
-    Empty ``expected`` means nobody approved anything in particular — an ordinary prompt —
-    and everything matches. Otherwise every action the plan would run must resolve to the
-    command that was shown; a plan with no actions matches nothing, because there is
-    nothing there to be the thing agreed to.
+    No ``expected`` means nobody approved anything in particular — an ordinary prompt — and
+    everything matches. Otherwise what the plan would run has to be exactly what was shown;
+    a plan with no actions matches nothing, because there is nothing there to be the thing
+    agreed to.
 
     The actions set aside are not among them. They resolve to nothing — there was no point
     resolving what is not going to run — so comparing them refused every approval of a
     definition with more than one action.
+
+    Equality, not containment. A person shown two commands has agreed to those two: a plan
+    that comes back from a re-plan holding a third has to be refused, and a subset test
+    would wave it through. Sorted rather than set-compared so two identical commands are
+    two commands — dropping the duplicate would let a plan run something twice on the
+    strength of its having been shown once.
     """
-    wanted = expected.strip()
-    if not wanted:
+    if not expected:
         return True
 
     running = [action for action in plan.actions if not action.skipped]
 
-    return bool(running) and all(action.resolved.strip() == wanted for action in running)
+    return bool(running) and sorted(
+        action.resolved.strip() for action in running
+    ) == sorted(expected)
 
 
 @router.get("/api/v1/tools", tags=["ops"])

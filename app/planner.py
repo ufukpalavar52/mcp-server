@@ -265,6 +265,7 @@ class Planner:
         history: Sequence[Any] = (),
         summary: str = "",
         action_id: int | None = None,
+        action_ids: Sequence[int] | None = None,
     ) -> Plan:
         """
         Resolve every action of ``definition`` against the supplied arguments.
@@ -290,7 +291,7 @@ class Planner:
 
         ordered = sorted(definition.actions, key=lambda item: item.position)
         chosen, skipped = await self._choose(
-            request, definition, ordered, plan, values, action_id, history
+            request, definition, ordered, plan, values, action_id, action_ids, history
         )
 
         if plan.problems:
@@ -342,6 +343,7 @@ class Planner:
     async def _choose(
         self, request: str, definition: Definition, ordered: list[Action], plan: Plan,
         values: dict[str, str], action_id: int | None = None,
+        action_ids: Sequence[int] | None = None,
         history: Sequence[Any] = (),
     ) -> tuple[list[Action], list[PlannedAction]]:
         """
@@ -356,19 +358,29 @@ class Planner:
         if len(ordered) <= 1:
             return ordered, []
 
-        # Named by the caller: a goal-loop step taking up an action the plan set aside
-        # knows which one it was. Asking again spends a model call to be told something
-        # already written down — and gives it a chance to answer differently.
-        if action_id is not None:
-            named = [action for action in ordered if action.id == action_id]
+        # Named by the caller: a goal-loop step taking up an action the plan set aside knows
+        # which one it was, and an approval knows every action the person was shown. Asking
+        # again spends a model call to be told something already written down — and gives it
+        # a chance to answer differently.
+        #
+        # One or several: a plan whose commands all resolve from the one sentence can be
+        # approved whole, and then the approval names them all rather than coming back once
+        # per action.
+        wanted_ids = [action_id] if action_id is not None else list(action_ids or [])
+
+        if wanted_ids:
+            named = [action for action in ordered if action.id in wanted_ids]
 
             if named:
                 return named, [
                     _set_aside(action, "the step is for another action")
-                    for action in ordered if action.id != action_id
+                    for action in ordered if action.id not in wanted_ids
                 ]
 
-            plan.problems.append(f"Action {action_id} is not part of this tool")
+            plan.problems.append(
+                "Action " + ", ".join(str(one) for one in wanted_ids)
+                + " is not part of this tool"
+            )
             return [], []
 
         if not request.strip():

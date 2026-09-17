@@ -418,7 +418,7 @@ class TestAnApprovedCommandIsTheOneThatRuns:
                           skipped=True, skip_reason="the request did not ask for this"),
         ])
 
-        assert _matches(plan, "DELETE http://h/users/102")
+        assert _matches(plan, ["DELETE http://h/users/102"])
 
     def test_a_plan_where_everything_was_set_aside_matches_nothing(self):
         # Nothing is going to run, so nothing can be the thing that was agreed to.
@@ -430,7 +430,7 @@ class TestAnApprovedCommandIsTheOneThatRuns:
                           skipped=True),
         ])
 
-        assert not _matches(plan, "DELETE http://h/users/102")
+        assert not _matches(plan, ["DELETE http://h/users/102"])
 
     def test_an_ordinary_prompt_approves_nothing_in_particular(self, client, ssh_definition):
         # Empty expect is every prompt anybody types. It must not become a gate.
@@ -1350,3 +1350,129 @@ class TestDynamicJobsCarryTheAuthoredStatement:
         assert "SELECT secret FROM vault" not in planned.model_dump_json().replace(
             '"resolved":"SELECT secret FROM vault"', ""
         )
+
+
+class TestSeveralCommandsApprovedAtOnce:
+    """
+    A plan whose commands all resolve from the one sentence can be shown whole.
+
+    "Write this script to /tmp and run it" is two commands and one decision. Asking twice
+    spends a second model call and a second wait on a decision already made — and the
+    person is reading the same card again.
+
+    What may not be batched is a plan holding an action *waiting* on an earlier answer.
+    That command does not exist yet, so there is nothing to put on the screen, and
+    approving what you have not seen is what this path exists to prevent. Which plans
+    qualify is the caller's decision; what is guaranteed here is that whatever runs is
+    what was shown.
+    """
+
+    @staticmethod
+    def _plan(*commands: str):
+        from app.planner import Plan, PlannedAction
+
+        return Plan(tool="t", definition_id=1, actions=[
+            PlannedAction(action_id=index, name=f"a{index}", kind="ssh", mode="static",
+                          resolved=command)
+            for index, command in enumerate(commands, start=1)
+        ])
+
+    def test_both_commands_approved_and_both_planned(self):
+        from app.api import _matches
+
+        assert _matches(
+            self._plan("cat > /tmp/f.py <<'E'\nprint(1)\nE", "python3 /tmp/f.py"),
+            ["cat > /tmp/f.py <<'E'\nprint(1)\nE", "python3 /tmp/f.py"],
+        )
+
+    def test_the_order_they_are_listed_in_does_not_matter(self):
+        """A plan is ordered by position; the screen is a list. Neither is a promise."""
+        from app.api import _matches
+
+        assert _matches(self._plan("one", "two"), ["two", "one"])
+
+    def test_a_third_command_appearing_is_refused(self):
+        """
+        The reason this is equality and not containment.
+
+        Planning is not deterministic. A re-plan that comes back holding an action nobody
+        was shown must be refused, and a subset test would wave it through — which is
+        exactly how an approval of a search could end up running a delete.
+        """
+        from app.api import _matches
+
+        assert not _matches(self._plan("one", "two", "three"), ["one", "two"])
+
+    def test_a_command_that_changed_is_refused(self):
+        from app.api import _matches
+
+        assert not _matches(self._plan("one", "two"), ["one", "different"])
+
+    def test_one_of_the_approved_commands_going_missing_is_refused(self):
+        """
+        Fewer is as wrong as more. Somebody who agreed to "write it and run it" did not
+        agree to "write it", and a plan that quietly dropped the second half would leave
+        them believing something ran that never did.
+        """
+        from app.api import _matches
+
+        assert not _matches(self._plan("one"), ["one", "two"])
+
+    def test_the_same_command_twice_is_two_commands(self):
+        """
+        Sorted rather than set-compared. Collapsing the duplicate would let a plan run
+        something twice on the strength of its having been shown once.
+        """
+        from app.api import _matches
+
+        assert not _matches(self._plan("one", "one"), ["one"])
+
+    def test_nothing_approved_still_matches_anything(self):
+        """An ordinary prompt approves nothing in particular and is not being checked."""
+        from app.api import _matches
+
+        assert _matches(self._plan("one", "two"), [])
+
+
+class TestNamingSeveralActions:
+    """Approving names the actions, rather than letting the choice run again."""
+
+    def test_only_the_named_actions_are_chosen(self):
+        from app.models import Action, ActionConfig, Definition
+        from app.planner import Plan, Planner
+
+        def action(identifier: int) -> Action:
+            return Action(id=identifier, kind="ssh", name=f"a{identifier}",
+                          position=identifier,
+                          config=ActionConfig(commandMode="static", command="echo hi"))
+
+        definition = Definition(id=1, name="t", toolName="t",
+                                actions=[action(1), action(2), action(3)])
+        plan = Plan(tool="t", definition_id=1)
+
+        import asyncio
+        wanted, left = asyncio.run(Planner.__new__(Planner)._choose(
+            "", definition, definition.actions, plan, {}, None, [1, 3]))
+
+        assert [item.id for item in wanted] == [1, 3]
+        assert [item.action_id for item in left] == [2]
+        assert left[0].skip_reason == "the step is for another action"
+
+    def test_an_action_that_is_not_part_of_the_tool_is_a_problem(self):
+        from app.models import Action, ActionConfig, Definition
+        from app.planner import Plan, Planner
+
+        definition = Definition(id=1, name="t", toolName="t", actions=[
+            Action(id=1, kind="ssh", name="a", position=0,
+                   config=ActionConfig(commandMode="static", command="echo hi")),
+            Action(id=2, kind="ssh", name="b", position=1,
+                   config=ActionConfig(commandMode="static", command="echo hi")),
+        ])
+        plan = Plan(tool="t", definition_id=1)
+
+        import asyncio
+        wanted, _ = asyncio.run(Planner.__new__(Planner)._choose(
+            "", definition, definition.actions, plan, {}, None, [99]))
+
+        assert wanted == []
+        assert "is not part of this tool" in plan.problems[0]
