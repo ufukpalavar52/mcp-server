@@ -186,6 +186,18 @@ class PromptRequest(BaseModel):
     #: approving what you have not seen is what this whole path exists to prevent.
     action_ids: list[int] = Field(default_factory=list, alias="actionIds")
 
+    #: The tools this caller may run, by name. Empty means no restriction.
+    #:
+    #: Empty rather than absent for "anything", because "may run nothing" has to look
+    #: different from "may run everything" — a list that meant both would offer an
+    #: administrator an empty catalogue.
+    #:
+    #: Routing is narrowed to these rather than the choice being refused afterwards. On the
+    #: gateway's execute path, planning and dispatch happen in one call: by the time a tool
+    #: name is known the job may already be queued, so refusing then would refuse work that
+    #: had already started. A tool that is never offered cannot be chosen.
+    allowed_tools: list[str] = Field(default_factory=list, alias="allowedTools")
+
     #: Values the caller has already decided, which win over anything routing extracts.
     #:
     #: A goal-loop step carries the value it read out of the previous answer. Routing had
@@ -495,7 +507,9 @@ async def create_prompt(body: PromptRequest, request: Request) -> PromptResponse
             chosen, body.prompt, body.history, body.summary
         )
     else:
-        routed = await router.route(body.prompt, body.history, body.summary)
+        routed = await router.route(
+            body.prompt, body.history, body.summary, body.allowed_tools
+        )
 
     if not routed.chosen:
         # Nothing matched, which is not the same as nothing to say. A question about the

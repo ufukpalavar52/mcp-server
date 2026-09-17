@@ -1476,3 +1476,76 @@ class TestNamingSeveralActions:
 
         assert wanted == []
         assert "is not part of this tool" in plan.problems[0]
+
+
+class TestRoutingOnlyOffersWhatTheCallerMayRun:
+    """
+    The restriction is enforced by not offering the tool, not by refusing the choice.
+
+    On the gateway's execute path, planning and dispatch happen inside one call: by the
+    time a tool name comes back, the job may already be on the broker. Refusing then would
+    refuse work that had already started. A tool that is never offered cannot be chosen,
+    which is the only form of this check that runs before the work does.
+    """
+
+    @staticmethod
+    def _catalogue(*names: str):
+        from app.catalogue import Catalogue
+        from app.models import Definition
+
+        catalogue = Catalogue()
+        catalogue.replace([
+            Definition(id=index, name=name, toolName=name)
+            for index, name in enumerate(names, start=1)
+        ])
+        return catalogue
+
+    def _router(self, *names: str):
+        from app.config import Settings
+        from app.router import PromptRouter
+
+        class NoBackend:
+            """Answers that no model is configured, rather than not being there at all."""
+
+            @staticmethod
+            def for_definition(*_args):
+                return None
+
+            @staticmethod
+            def unavailable_reason(*_args):
+                return "no model configured"
+
+        router = PromptRouter.__new__(PromptRouter)
+        router._catalogue = self._catalogue(*names)
+        router._settings = Settings()
+        router._backends = NoBackend()
+        return router
+
+    async def _problem(self, router, allowed):
+        routed = await router.route("bir sey yap", allowed=allowed)
+        return routed.problem
+
+    def test_a_caller_with_nothing_allowed_is_told_the_catalogue_is_empty(self):
+        """
+        Which is true from where they stand, and says nothing about what exists.
+
+        Listing the tools they may not reach would turn a refusal into an inventory.
+        """
+        import asyncio
+
+        problem = asyncio.run(self._problem(self._router("a", "b"), ["c"]))
+
+        assert "catalogue is empty" in problem
+
+    def test_an_empty_allowance_means_no_restriction(self):
+        """
+        Not "may run nothing". An administrator is sent no list at all, and a list that
+        meant both would offer them an empty catalogue.
+        """
+        import asyncio
+
+        # Gets past the catalogue check and fails at the backend instead, which is how we
+        # know the tools survived the narrowing.
+        problem = asyncio.run(self._problem(self._router("a", "b"), []))
+
+        assert "catalogue is empty" not in (problem or "")

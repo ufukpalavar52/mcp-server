@@ -1038,8 +1038,26 @@ class PromptRouter:
         return result.parsed.summary.strip() or existing
 
     async def route(self, prompt: str, history: Sequence[Any] = (),
-                    summary: str = "") -> Routed:
+                    summary: str = "", allowed: Sequence[str] = ()) -> Routed:
+        """
+        Chooses a tool for a sentence.
+
+        ``allowed`` narrows the catalogue to what this caller may actually run. Empty means
+        no restriction rather than nothing — an administrator would otherwise be offered an
+        empty catalogue, and "may run anything" and "may run nothing" have to look
+        different.
+
+        Narrowing here rather than refusing afterwards, and that is not only politeness. On
+        the gateway's execute path, planning and dispatch happen inside one call: by the
+        time a tool name comes back, the job may already be on the broker. A tool that is
+        never offered cannot be chosen, which is the only form of this check that runs
+        before the work does.
+        """
         tools = self._catalogue.all()
+
+        if allowed:
+            permitted = set(allowed)
+            tools = [tool for tool in tools if tool.tool_name in permitted]
 
         if not tools:
             return Routed(problem="The catalogue is empty; there is nothing to call")
