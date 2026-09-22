@@ -458,15 +458,51 @@ async def publish_catalogue(body: PublishRequest, request: Request) -> PublishRe
 @router.post("/api/v1/executions", tags=["gateway"], dependencies=[Protected])
 async def create_execution(body: ExecutionRequest, request: Request) -> ExecutionResponse:
     """
-    Decide what a tool call resolves to.
+    Decide what a tool call resolves to, and carry it out unless somebody must say yes.
 
-    This is the endpoint the gateway calls. The decision is made here; handing it to an
-    executor is a separate step, and today that step reports that no executor exists
-    rather than pretending the work ran.
+    This is the endpoint the gateway calls for a direct tool invocation — the panel's tool
+    screen, and any MCP client. It used to dispatch unconditionally, on the reasoning in
+    the sentence that stood here: that no executor existed and the step could only report
+    as much. An executor exists. The sentence outlived the fact, and what it was excusing
+    became real.
+
+    What that cost: an action marked as needing approval had `requires_approval` computed
+    into its plan and drawn on the screen — "This action requires approval." — and then
+    dispatched anyway. On 21 September three clicks on a tool screen that also said
+    "Nothing is executed" ran `tail -f /var/log/messages` on a live host three times, two
+    minutes each, with no approver recorded because there was nobody to record.
+
+    The gate is the same one `_dispatch` applies to a prompt, and deliberately the same
+    function rather than a second reading of the same flag: two places deciding what
+    approval means is how they come to disagree.
+
+    Unlike the prompt path there is nothing here to approve *with* — an ExecutionRequest
+    carries no agreement, because this endpoint never had a way to express one. So an
+    action that needs approval cannot be run from here at all, and says so. That is the
+    honest state: this screen shows what a tool would do, and a command whose operator
+    asked for a person in the loop needs the path that has one.
     """
     definition = _resolve_definition(body, request)
 
     plan = await request.app.state.planner.plan(definition, body.arguments)
+
+    # Only a plan that came out well has anything to approve. A rejected one carries no
+    # command — the guardrails refused the one there was — and the dispatcher's own
+    # refusal says something more useful than a request for approval of nothing.
+    if plan.status == "planned" and _needs_approval(plan):
+        return ExecutionResponse(
+            status=plan.status,
+            plan=plan,
+            dispatch=DispatchResult(
+                status="awaiting_approval",
+                reason=(
+                    "This action needs approval before it runs, and this endpoint has no "
+                    "way to give it. Nothing has been dispatched. Run it from the console, "
+                    "where the command can be approved as it reads."
+                ),
+            ),
+        )
+
     dispatch = await request.app.state.dispatcher.dispatch(
         definition, plan, body.arguments, actor=body.actor
     )

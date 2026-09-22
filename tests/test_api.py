@@ -103,6 +103,63 @@ class TestCatalogue:
         assert "default" not in schema["properties"]["ssh_key"]
 
 
+class TestTheToolScreenHonoursTheSameApproval:
+    """
+    The direct tool endpoint used to dispatch unconditionally.
+
+    The reasoning was written into its own docstring — that no executor existed, so the
+    step could only report as much. An executor arrived; the sentence stayed. What it was
+    excusing became real, and on 21 September three clicks on a panel screen that said
+    "Nothing is executed" ran `tail -f /var/log/messages` on a live host three times, two
+    minutes each, with no approver recorded because there was nobody to record.
+
+    The box was never decorative to the operator who ticked it. It was decorative to this
+    endpoint.
+    """
+
+    @staticmethod
+    def _published(client, ssh_definition, *, approval: bool):
+        ssh_definition.actions[0].config.require_approval = approval
+        client.put("/api/v1/catalogue", json=publish_body(ssh_definition))
+        return client
+
+    def test_an_action_needing_approval_is_not_dispatched(self, client, ssh_definition):
+        client = self._published(client, ssh_definition, approval=True)
+
+        body = client.post("/api/v1/executions", json={
+            "toolName": "apache_fleet", "arguments": {"service": "nginx"},
+        }).json()
+
+        assert body["dispatch"]["status"] == "awaiting_approval"
+        assert body["dispatch"].get("run_id") is None
+
+        # The plan still comes back. Seeing what a tool would do is what this screen is
+        # for, and withholding it would remove the reason to open it.
+        assert body["plan"]["actions"][0]["resolved"] == "systemctl restart nginx"
+
+    def test_the_reason_says_where_approval_can_be_given(self, client, ssh_definition):
+        # An ExecutionRequest carries no agreement, so this endpoint cannot be approved
+        # through. A refusal that does not say where to go leaves somebody clicking.
+        client = self._published(client, ssh_definition, approval=True)
+
+        body = client.post("/api/v1/executions", json={
+            "toolName": "apache_fleet", "arguments": {"service": "nginx"},
+        }).json()
+
+        assert "console" in body["dispatch"]["reason"].lower()
+
+    def test_an_action_without_the_box_still_runs(self, client, ssh_definition):
+        # The gate is the operator's setting, not a new rule about this endpoint. A tool
+        # nobody asked to gate must work from here exactly as it did.
+        client = self._published(client, ssh_definition, approval=False)
+
+        body = client.post("/api/v1/executions", json={
+            "toolName": "apache_fleet", "arguments": {"service": "nginx"},
+        }).json()
+
+        assert body["dispatch"]["status"] != "awaiting_approval"
+
+
 class TestExecutions:
     def test_plans_a_published_tool(self, client, ssh_definition):
         client.put("/api/v1/catalogue", json=publish_body(ssh_definition))
