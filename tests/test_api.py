@@ -137,16 +137,47 @@ class TestTheToolScreenHonoursTheSameApproval:
         # for, and withholding it would remove the reason to open it.
         assert body["plan"]["actions"][0]["resolved"] == "systemctl restart nginx"
 
-    def test_the_reason_says_where_approval_can_be_given(self, client, ssh_definition):
-        # An ExecutionRequest carries no agreement, so this endpoint cannot be approved
-        # through. A refusal that does not say where to go leaves somebody clicking.
+    def test_sending_back_the_command_shown_dispatches_it(self, client, ssh_definition):
+        # Approval is of a command, not of an intention: ask, read what it resolved to,
+        # and say yes to that. Two calls and one decision.
+        client = self._published(client, ssh_definition, approval=True)
+
+        first = client.post("/api/v1/executions", json={
+            "toolName": "apache_fleet", "arguments": {"service": "nginx"},
+        }).json()
+        shown = first["plan"]["actions"][0]["resolved"]
+
+        second = client.post("/api/v1/executions", json={
+            "toolName": "apache_fleet", "arguments": {"service": "nginx"},
+            "expect": shown,
+        }).json()
+
+        assert second["dispatch"]["status"] != "awaiting_approval"
+
+    def test_approving_something_else_is_refused(self, client, ssh_definition):
+        # The guarantee, not a formality. Planning is not deterministic, so agreement to
+        # one command must not carry to whatever the next plan happens to say.
+        client = self._published(client, ssh_definition, approval=True)
+
+        body = client.post("/api/v1/executions", json={
+            "toolName": "apache_fleet", "arguments": {"service": "nginx"},
+            "expect": "systemctl restart something-else",
+        }).json()
+
+        assert body["dispatch"]["status"] == "refused"
+        assert "changed" in body["dispatch"]["reason"].lower()
+
+    def test_approval_cannot_be_given_before_there_is_a_plan(self, client, ssh_definition):
+        # The first call has nothing to approve with, and says so rather than inventing a
+        # way to agree to a command nobody has seen.
         client = self._published(client, ssh_definition, approval=True)
 
         body = client.post("/api/v1/executions", json={
             "toolName": "apache_fleet", "arguments": {"service": "nginx"},
         }).json()
 
-        assert "console" in body["dispatch"]["reason"].lower()
+        assert body["dispatch"]["status"] == "awaiting_approval"
+        assert "approve" in body["dispatch"]["reason"].lower()
 
     def test_an_action_without_the_box_still_runs(self, client, ssh_definition):
         # The gate is the operator's setting, not a new rule about this endpoint. A tool

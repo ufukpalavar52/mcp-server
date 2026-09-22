@@ -247,6 +247,23 @@ class ExecutionRequest(BaseModel):
     #: Who asked. Recorded in the decision and passed to the executor.
     actor: str | None = None
 
+    #: The command a person was shown and agreed to, if they were shown one.
+    #:
+    #: The same field the prompt path carries, and for the same reason: approval is of a
+    #: command, not of an intention. Planning is not deterministic, so what was on the
+    #: screen and what is about to run have to be compared rather than assumed equal.
+    #:
+    #: Empty on a first call — there is nothing to approve until a plan exists. The caller
+    #: asks once, is shown the command, and asks again carrying it. That second call is
+    #: what a person clicking "approve and run" sends.
+    #:
+    #: Not a way to supply a command. What runs is still what the planner writes and the
+    #: guardrails pass; this only refuses to run anything else.
+    expect: str = ""
+
+    #: Every command approved at once, when the plan showed more than one.
+    expect_all: list[str] = Field(default_factory=list, alias="expectAll")
+
 
 class ExecutionResponse(BaseModel):
     """The decision, and what became of it."""
@@ -476,29 +493,44 @@ async def create_execution(body: ExecutionRequest, request: Request) -> Executio
     function rather than a second reading of the same flag: two places deciding what
     approval means is how they come to disagree.
 
-    Unlike the prompt path there is nothing here to approve *with* — an ExecutionRequest
-    carries no agreement, because this endpoint never had a way to express one. So an
-    action that needs approval cannot be run from here at all, and says so. That is the
-    honest state: this screen shows what a tool would do, and a command whose operator
-    asked for a person in the loop needs the path that has one.
+    Approval is given the way the prompt path gives it: by sending back the command that
+    was on the screen. It cannot be given in advance, and that is not a gap to close —
+    planning is not deterministic, so approving before a plan exists would be agreeing to
+    whatever the model writes next. What a person can do is ask, read the command, and say
+    yes to *that*, which is two calls and one decision.
     """
     definition = _resolve_definition(body, request)
 
     plan = await request.app.state.planner.plan(definition, body.arguments)
+    approved = _approved_commands(body)
 
     # Only a plan that came out well has anything to approve. A rejected one carries no
     # command — the guardrails refused the one there was — and the dispatcher's own
     # refusal says something more useful than a request for approval of nothing.
-    if plan.status == "planned" and _needs_approval(plan):
+    if plan.status == "planned" and _needs_approval(plan) and not approved:
         return ExecutionResponse(
             status=plan.status,
             plan=plan,
             dispatch=DispatchResult(
                 status="awaiting_approval",
                 reason=(
-                    "This action needs approval before it runs, and this endpoint has no "
-                    "way to give it. Nothing has been dispatched. Run it from the console, "
-                    "where the command can be approved as it reads."
+                    "This action needs approval before it runs. Nothing has been "
+                    "dispatched. Approve the command as it reads and ask again."
+                ),
+            ),
+        )
+
+    # The command approved and the command about to run are compared rather than assumed
+    # equal. A re-plan can come back different, and the agreement was to what was shown.
+    if not _matches(plan, approved):
+        return ExecutionResponse(
+            status=plan.status,
+            plan=plan,
+            dispatch=DispatchResult(
+                status="refused",
+                reason=(
+                    "The plan changed since it was approved; nothing is dispatched. "
+                    "Approve the command as it now reads."
                 ),
             ),
         )
@@ -676,8 +708,13 @@ def _changes_something(plan: Any) -> bool:
     return any(action.writes for action in plan.actions if not action.skipped)
 
 
-def _approved_commands(body: PromptRequest) -> list[str]:
-    """Every command this request says a person agreed to, singular or plural."""
+def _approved_commands(body: PromptRequest | ExecutionRequest) -> list[str]:
+    """
+    Every command this request says a person agreed to, singular or plural.
+
+    One function for both requests rather than one each: what counts as an agreement
+    is a single rule, and two copies of it are two rules waiting to drift.
+    """
     if body.expect_all:
         return [line.strip() for line in body.expect_all if line.strip()]
 
