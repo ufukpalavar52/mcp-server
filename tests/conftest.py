@@ -62,6 +62,44 @@ def ssh_definition() -> Definition:
 
 
 @pytest.fixture
+def two_action_definition() -> Definition:
+    """
+    A definition whose actions cannot be told apart from arguments alone.
+
+    Both are static, so nothing is left to a model; what is left open is which of the two
+    the caller wants, and only a sentence or a named action answers that.
+    """
+    return Definition(
+        id=4,
+        name="Rocky betik",
+        toolName="rocky_script",
+        toolDescription="Writes a script and runs it.",
+        modelId=1,
+        modelIdentifier="claude-opus-5",
+        systemPrompt="You are a systems assistant.",
+        inputs=[],
+        actions=[
+            Action(
+                id=41, kind="ssh", name="Write", position=0,
+                hostGroupId=1, hostGroupName="web-servers", resolvedTargetCount=1,
+                config=ActionConfig(
+                    targetMode="group", port=22, user="deploy", auth="key",
+                    commandMode="static", command="touch /tmp/x",
+                ),
+            ),
+            Action(
+                id=42, kind="ssh", name="Run", position=1,
+                hostGroupId=1, hostGroupName="web-servers", resolvedTargetCount=1,
+                config=ActionConfig(
+                    targetMode="group", port=22, user="deploy", auth="key",
+                    commandMode="static", command="bash /tmp/x",
+                ),
+            ),
+        ],
+    )
+
+
+@pytest.fixture
 def dynamic_db_definition() -> Definition:
     """A definition whose single database action is in dynamic mode."""
     return Definition(

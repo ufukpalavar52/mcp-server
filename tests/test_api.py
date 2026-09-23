@@ -103,6 +103,56 @@ class TestCatalogue:
         assert "default" not in schema["properties"]["ssh_key"]
 
 
+class TestNamingAnActionOnTheDirectPath:
+    """
+    A definition with several actions, called without a sentence.
+
+    Which action a request wants is what a sentence says, and this endpoint has none. It
+    answered "the request said which in no words at all" and planned nothing — correct,
+    and no use at all to a person looking at a list of the tool's actions on a screen.
+
+    Naming one removes the question instead of answering it: no model call to choose, and
+    no chance of a different choice next time.
+    """
+
+    def test_without_a_named_action_nothing_is_planned(self, client, two_action_definition):
+        client.put("/api/v1/catalogue", json=publish_body(two_action_definition))
+
+        body = client.post("/api/v1/executions", json={
+            "toolName": two_action_definition.tool_name, "arguments": {},
+        }).json()
+
+        assert body["status"] == "incomplete"
+        assert body["plan"]["actions"] == []
+
+    def test_naming_one_plans_it_and_sets_the_others_aside(self, client, two_action_definition):
+        client.put("/api/v1/catalogue", json=publish_body(two_action_definition))
+        wanted = two_action_definition.actions[0].id
+
+        body = client.post("/api/v1/executions", json={
+            "toolName": two_action_definition.tool_name,
+            "arguments": {},
+            "actionId": wanted,
+        }).json()
+
+        running = [a for a in body["plan"]["actions"] if not a["skipped"]]
+        assert [a["action_id"] for a in running] == [wanted]
+
+    def test_an_action_of_another_tool_is_refused(self, client, two_action_definition):
+        # Not silently ignored. A caller naming an action that is not there has a bug or a
+        # stale screen, and planning something else instead would hide both.
+        client.put("/api/v1/catalogue", json=publish_body(two_action_definition))
+
+        body = client.post("/api/v1/executions", json={
+            "toolName": two_action_definition.tool_name,
+            "arguments": {},
+            "actionId": 9999,
+        }).json()
+
+        assert body["plan"]["actions"] == []
+        assert any("not part of this tool" in p for p in body["plan"]["problems"])
+
+
 class TestTheToolScreenHonoursTheSameApproval:
     """
     The direct tool endpoint used to dispatch unconditionally.

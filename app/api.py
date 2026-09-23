@@ -247,6 +247,18 @@ class ExecutionRequest(BaseModel):
     #: Who asked. Recorded in the decision and passed to the executor.
     actor: str | None = None
 
+    #: Which of the tool's actions this call is for, when the caller has decided.
+    #:
+    #: A definition with several actions cannot be planned from arguments alone: which
+    #: action is wanted is what a sentence says, and this endpoint has no sentence. It
+    #: answered "the request said which in no words at all" and planned nothing, which is
+    #: correct and unhelpful when the caller is a person looking at a list of the actions.
+    #:
+    #: Naming one removes the question rather than answering it: no model call, no chance
+    #: of a different answer next time. The same field the prompt path uses for a goal-loop
+    #: step taking up an action the plan set aside.
+    action_id: int | None = Field(default=None, alias="actionId")
+
     #: The command a person was shown and agreed to, if they were shown one.
     #:
     #: The same field the prompt path carries, and for the same reason: approval is of a
@@ -501,7 +513,9 @@ async def create_execution(body: ExecutionRequest, request: Request) -> Executio
     """
     definition = _resolve_definition(body, request)
 
-    plan = await request.app.state.planner.plan(definition, body.arguments)
+    plan = await request.app.state.planner.plan(
+        definition, body.arguments, action_id=body.action_id
+    )
     approved = _approved_commands(body)
 
     # Only a plan that came out well has anything to approve. A rejected one carries no
